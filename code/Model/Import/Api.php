@@ -22,7 +22,7 @@ class Danslo_ApiImport_Model_Import_Api
     /**
      * Cached import model.
      *
-     * @var Mage_ApiImport_Model_Import
+     * @var Danslo_ApiImport_Model_Import
      */
     protected $_api;
 
@@ -35,6 +35,11 @@ class Danslo_ApiImport_Model_Import_Api
      * @var int
      */
     protected $_catalogProductEntityTypeId;
+
+    /**
+     * @var array
+     */
+    protected $_storeCodeToId;
 
     /**
      * Sets up the import model and loads area parts.
@@ -91,6 +96,8 @@ class Danslo_ApiImport_Model_Import_Api
             $behavior = Mage_ImportExport_Model_Import::BEHAVIOR_APPEND;
         }
         $this->_init();
+        /** @var Mage_Eav_Model_Config $config */
+        $config = Mage::getSingleton('eav/config');
 
         if (Danslo_ApiImport_Model_Import::BEHAVIOR_DELETE_IF_NOT_EXIST === $behavior) {
             $this->_pruneAttributes($data);
@@ -102,7 +109,25 @@ class Danslo_ApiImport_Model_Import_Api
 
                     if (Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE === $behavior
                         || Mage_ImportExport_Model_Import::BEHAVIOR_APPEND === $behavior) {
+                        $labels = array();
+                        foreach ($this->_storeCodeToId as $storeCode => $storeId) {
+                            $key = 'label-' . $storeCode;
+                            if (array_key_exists($key, $attribute)) {
+                                $labels[$storeId] = $attribute[$key];
+                                unset($attribute[$key]);
+                            }
+                        }
                         $this->_setup->addAttribute($this->_catalogProductEntityTypeId, $attributeCode, $attribute);
+                        if ($labels) {
+                            try {
+                                $attributeId = $this->_setup->getAttributeId($this->_catalogProductEntityTypeId, $attributeCode);
+                                $config->getAttribute($this->_catalogProductEntityTypeId, $attributeId)
+                                    ->setData('store_labels', $labels)
+                                    ->save();
+                            } catch (Exception $exception) {
+                                $this->_api->addLogComment("Could not update labels for " . $attributeCode);
+                            }
+                        }
                     } elseif (Mage_ImportExport_Model_Import::BEHAVIOR_DELETE === $behavior) {
                         $this->_setup->removeAttribute($this->_catalogProductEntityTypeId, $attributeCode);
                     }
@@ -176,6 +201,11 @@ class Danslo_ApiImport_Model_Import_Api
     {
         $this->_setup = new Mage_Catalog_Model_Resource_Eav_Mysql4_Setup('catalog_product_attribute_set');
         $this->_catalogProductEntityTypeId = $this->_setup->getEntityTypeId(Mage_Catalog_Model_Product::ENTITY);
+
+        foreach (Mage::app()->getStores() as $store) {
+            /** @var Mage_Core_Model_Store $store */
+            $this->_storeCodeToId[$store->getCode()] = $store->getId();
+        }
     }
 
     /**
