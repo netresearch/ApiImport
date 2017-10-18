@@ -193,6 +193,267 @@ class Danslo_ApiImport_Model_Import_Api
     }
 
     /**
+     * Get potential true string values a true, others as false
+     *
+     * @param string $str
+     * @return bool
+     */
+    private function strToBool($str) {
+        return in_array($str, ['true', '1', 1, true, 'yes'], true);
+    }
+
+    /**
+     * Detect ambiguously set values (e.g. one row says website with code base has
+     * name "name1" and others say it has name "name2")
+     *
+     * @param array $keys
+     * @param array $new
+     * @param array $existing
+     * @param string $type
+     * @param int $i
+     * @return bool
+     */
+    private function hasAmbiguousValues(array $keys, array $new, array $existing, $type, $i) {
+        $ambiguous = false;
+        foreach ($keys as $key) {
+            $existingValue = $existing[$key];
+            $newValue = $new[$type . '_' . $key];
+            if (is_bool($existingValue)) {
+                $newValue = $this->strToBool($newValue);
+            }
+            if ($newValue !== $existingValue) {
+                $ambiguous = true;
+                $this->_api->addLogComment(
+                    "[ERROR] Invalid row $i: Conflict for {$type}_$key - already registered with a different value"
+                );
+            }
+        }
+        return $ambiguous;
+    }
+
+    /**
+     * Detect if already added records were marked as default and reset
+     * is_default on $new in this case
+     *
+     * @param string $type
+     * @param string $id
+     * @param array $new
+     * @param array[] $existings
+     * @param int $i
+     */
+    private function fixConflictWithOtherDefaults($type, $id, &$new, $existings, $i) {
+        if (!$new['is_default']) {
+            return;
+        }
+        foreach ($existings as $existingId => $existing) {
+            if ($existingId !== $id && $existing['is_default']) {
+                $this->_api->addLogComment(
+                    "[WARNING] Default $type conflict in line $i - keeping '$existingId'"
+                );
+                $new['is_default'] = false;
+            }
+        }
+    }
+
+    /**
+     * Get a hierarchical representation of the flat store rows
+     *
+     * @param array $data
+     * @return array
+     */
+    protected function getWebsites($data) {
+        $websites = [];
+        $requiredKeys = ['code', 'name', 'is_default', 'group_name', 'group_root_category', 'group_is_default', 'website_code', 'website_name', 'website_is_default'];
+        $defaults = ['active' => '0', 'sort_order' => '0'];
+        foreach ($data as $i => $row) {
+            $missing = [];
+            foreach ($requiredKeys as $key) {
+                if (empty($row[$key])) {
+                    $missing[] = $key;
+                }
+            }
+            if ($missing) {
+                $this->_api->addLogComment("Invalid row $i: Missing columns " . implode(", ", $missing));
+                continue;
+            }
+            if (!array_key_exists($wsCode = $row['website_code'], $websites)) {
+                $websites[$wsCode] = [
+                    'name' => $row['website_name'],
+                    'groups' => [],
+                    'is_default' => $this->strToBool($row['website_is_default'])
+                ];
+            }
+            $website = &$websites[$wsCode];
+            if (!$this->hasAmbiguousValues(['name', 'is_default'], $row, $website, 'website', $i)) {
+                $this->fixConflictWithOtherDefaults('website', $wsCode, $website, $websites, $i);
+
+                if (!array_key_exists($groupName = $row['group_name'], $website['groups'])) {
+                    $website['groups'][$groupName] = [
+                        'root_category' => $row['group_root_category'],
+                        'stores' => [],
+                        'is_default' => $this->strToBool($row['group_is_default'])
+                    ];
+                }
+                $group = &$website['groups'][$groupName];
+                if (!$this->hasAmbiguousValues(['root_category', 'is_default'], $row, $group, 'group', $i)) {
+                    $this->fixConflictWithOtherDefaults('group', $groupName, $group, $website['groups'], $i);
+
+                    $row = array_merge($defaults, $row);
+                    $row['is_default'] = $this->strToBool($row['is_default']);
+                    $row['active'] = $this->strToBool($row['active']);
+                    $this->fixConflictWithOtherDefaults('store', $row['code'], $row, $group['stores'], $i);
+                    $group['stores'][$row['code']] = $row;
+                }
+            }
+        }
+        return $websites;
+    }
+
+    /**
+     * Import stores
+     *
+     * Currently there is "only" a full sync behaviour
+     *
+     * @param array $data
+     * @param string $behavior
+     * @return bool
+     */
+    public function importStores(array $data, $behavior = null) {
+        if (null === $behavior) {
+            $behavior = Mage_ImportExport_Model_Import::BEHAVIOR_APPEND;
+        } elseif (!in_array($behavior, [Mage_ImportExport_Model_Import::BEHAVIOR_APPEND, Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE])) {
+            $this->_api->addLogComment("Behavior $behavior currently not supported");
+            return false;
+        }
+
+        /* @var Mage_Core_Model_Website[] $existingWebsites */
+        $existingWebsites = Mage::app()->getWebsites(false, true);
+        /* @var Mage_Core_Model_Store_Group[] $existingGroups */
+        $existingGroups = Mage::app()->getGroups();
+        /* @var Mage_Core_Model_Store[] $existingStores */
+        $existingStores = Mage::app()->getStores(false, true);
+
+        $rootCategoryIds = [];
+        /* @var Mage_Catalog_Model_Resource_Eav_Mysql4_Category_Collection $categories */
+        $categories = Mage::getModel('catalog/category')->getCollection();
+        $categories
+            ->addNameToResult()
+            ->setStoreId(0)
+            ->addAttributeToFilter('level', 1);
+        foreach ($categories as $category) {
+            /* @var Mage_Catalog_Model_Category $category */
+            $categoryName = $category->getName();
+            if (array_key_exists($categoryName, $rootCategoryIds)) {
+                $this->_api->addLogComment("[WARNING] Duplicate root category name: $categoryName");
+            } else {
+                $rootCategoryIds[$categoryName] = $category->getId();
+            }
+        }
+
+        foreach ($this->getWebsites($data) as $wsCode => $wsData) {
+            if (!array_key_exists($wsCode, $existingWebsites)) {
+                $this->_api->addLogComment("[INFO] Adding new website '$wsCode'");
+                $existingWebsites[$wsCode] = Mage::getModel('core/website')->setCode($wsCode);
+            }
+            $website = $existingWebsites[$wsCode];
+            if ($wsData['is_default'] && !$website->getIsDefault()) {
+                $this->_api->addLogComment("[INFO] Setting website '$wsCode' as default");
+                foreach ($existingWebsites as $existingWebsiteCode => $existingWebsite) {
+                    if ($existingWebsiteCode !== $wsCode) {
+                        $existingWebsite->setIsDefault(0);
+                    }
+                }
+            }
+            $website
+                ->setIsDefault($wsData['is_default'] ? 1 : 0)
+                ->setName($wsData['name'])
+                ->save();
+            
+            foreach ($wsData['groups'] as $groupName => $gData) {
+                if (!array_key_exists($gData['root_category'], $rootCategoryIds)) {
+                    $this->_api->addLogComment("[INFO] Adding new root category '{$gData['root_category']}'");
+                    /* @var Mage_Catalog_Model_Category $newCategory */
+                    $newCategory = Mage::getModel('catalog/category');
+                    $newCategory
+                        ->setStoreId(0)
+                        ->setData('name', $gData['root_category'])
+                        ->setData('url_key', $gData['root_category'] . '-catalog')
+                        ->setData('display_mode', 'PRODUCTS')
+                        ->setData('level', 1);
+                    $newCategory->save();
+                    $rootCategoryIds[$groupName['category']] = $newCategory->getId();
+                }
+                $categoryId = $rootCategoryIds[$gData['root_category']];
+
+                /* @var Mage_Core_Model_Store_Group $group */
+                $group = null;
+                foreach ($existingGroups as $existingGroup) {
+                    if ($existingGroup->getWebsiteId() === $website->getId()) {
+                        if ($existingGroup->getRootCategoryId() === $categoryId && $existingGroup->getName() === $groupName) {
+                            $group = $existingGroup;
+                            break;
+                        }
+                        if ($existingGroup->getName() === $groupName) {
+                            $group = $existingGroup;
+                            $this->_api->addLogComment("[INFO] Setting root category of group '$groupName' on website '$wsCode' '{$gData['root_category']}'"
+                            );
+                            $group->setRootCategoryId($categoryId)->save();
+                            break;
+                        }
+                        if ($existingGroup->getRootCategoryId() === $categoryId) {
+                            $group = $existingGroup;
+                            $groupName = $group->getName();
+                            $this->_api->addLogComment("[INFO] Changing name of group '$groupName' on website '$wsCode' to $groupName");
+                            $group->setName($groupName)->save();
+                            break;
+                        }
+                    }
+                }
+                if (!$group) {
+                    $this->_api->addLogComment("[INFO] Adding store group {$groupName} to website $wsCode");
+                    $group = Mage::getModel('core/store_group');
+                    $group->setWebsiteId($website->getId())
+                        ->setName($groupName)
+                        ->setRootCategoryId($categoryId)
+                        ->save();
+                    $existingGroups[$group->getId()] = $group;
+                }
+                
+                if ($gData['is_default'] && $website->getDefaultGroupId() !== $group->getId()) {
+                    $this->_api->addLogComment("[INFO] Setting '$groupName' as default group on '$wsCode'");
+                    $website->setDefaultGroupId($group->getId())->save();
+                }
+                foreach ($gData['stores'] as $code => $storeData) {
+                    if (!array_key_exists($code, $existingStores)) {
+                        $this->_api->addLogComment("[INFO] Adding new store '$code' on group '$groupName' on website '$wsCode'");
+                        $existingStores[$code] = Mage::getModel('core/store')->setCode($code);
+                    }
+                    $store = $existingStores[$code];
+                    $store
+                        ->setName($storeData['name'])
+                        ->setWebsiteId($website->getId())
+                        ->setGroupId($group->getId())
+                        ->setSortOrder(intval($storeData['sort_order']))
+                        ->setIsActive($storeData['active'] ? 1 : 0)
+                        ->save();
+                    if ($storeData['is_default'] && $group->getDefaultStoreId() !== $store->getId()) {
+                        $this->_api->addLogComment("[INFO] Setting '$code' as default store on group '$groupName' on website '$wsCode'");
+                        $group->setDefaultStoreId($store->getId())->save();
+                    }
+                }
+                foreach ($existingStores as $code => $store) {
+                    if ($store->getGroupId() === $group->getId() && !array_key_exists($code, $gData['stores']) && $store->getIsActive()) {
+                        $this->_api->addLogComment("[INFO] Deactivating store '$code'");
+                        $store->setIsActive(0)->save();
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Initialize parameters
      *
      * @return void

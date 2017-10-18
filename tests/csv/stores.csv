@@ -1,0 +1,4 @@
+website_code;website_name;website_is_default;group_name;group_root_category;group_is_default;code;name;active;is_default
+base;My website;1;My Shop;Main Category;1;en;English;1;1
+base;My website;1;My Shop;Main Category;1;de;German;1;1
+base;My website;1;My Shop;Main Category;1;fr;French;0;1
