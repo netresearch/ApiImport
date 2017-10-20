@@ -264,11 +264,11 @@ class Danslo_ApiImport_Model_Import_Api
     protected function getWebsites($data) {
         $websites = [];
         $requiredKeys = ['code', 'name', 'is_default', 'group_name', 'group_root_category', 'group_is_default', 'website_code', 'website_name', 'website_is_default'];
-        $defaults = ['active' => '0', 'sort_order' => '0'];
+        $defaults = ['is_active' => '0', 'sort_order' => '0'];
         foreach ($data as $i => $row) {
             $missing = [];
             foreach ($requiredKeys as $key) {
-                if (empty($row[$key])) {
+                if (empty($row[$key]) && $row[$key] !== "0") {
                     $missing[] = $key;
                 }
             }
@@ -300,9 +300,17 @@ class Danslo_ApiImport_Model_Import_Api
 
                     $row = array_merge($defaults, $row);
                     $row['is_default'] = $this->strToBool($row['is_default']);
-                    $row['active'] = $this->strToBool($row['active']);
+                    $row['is_active'] = $this->strToBool($row['is_active']);
                     $this->fixConflictWithOtherDefaults('store', $row['code'], $row, $group['stores'], $i);
-                    $group['stores'][$row['code']] = $row;
+                    $store = ['config' => [], 'index' => $i];
+                    foreach ($row as $column => $cell) {
+                        if (in_array($column, $requiredKeys) || array_key_exists($column, $defaults)) {
+                            $store[$column] = $cell;
+                        } else {
+                            $store['config'][$column] = $cell;
+                        }
+                    }
+                    $group['stores'][$row['code']] = $store;
                 }
             }
         }
@@ -434,8 +442,17 @@ class Danslo_ApiImport_Model_Import_Api
                         ->setWebsiteId($website->getId())
                         ->setGroupId($group->getId())
                         ->setSortOrder(intval($storeData['sort_order']))
-                        ->setIsActive($storeData['active'] ? 1 : 0)
+                        ->setIsActive($storeData['is_active'] ? 1 : 0)
                         ->save();
+                    $config = Mage::getConfig();
+                    foreach ($storeData['config'] as $configKey => $configValue) {
+                        if ($configKey === 'general/locale/code') {
+                            if ($locale = $this->importLocale($configValue)) {
+                                $configValue = $locale;
+                            }
+                        }
+                        $config->saveConfig($configKey, $configValue, 'stores', $store->getId());
+                    }
                     if ($storeData['is_default'] && $group->getDefaultStoreId() !== $store->getId()) {
                         $this->_api->addLogComment("[INFO] Setting '$code' as default store on group '$groupName' on website '$wsCode'");
                         $group->setDefaultStoreId($store->getId())->save();
@@ -450,6 +467,86 @@ class Danslo_ApiImport_Model_Import_Api
             }
         }
 
+        return true;
+    }
+
+    public function importLocales(array $data) {
+        foreach ($data as $i => $row) {
+            if (empty($row['code']) || !is_string($row['code'])) {
+                $this->_api->addLogComment("[ERROR] Missing code on row $i");
+                continue;
+            }
+            $this->importLocale($row['code']);
+        }
+    }
+
+    private function importLocale($code) {
+        $knownLanguagePacks = [
+            'de_DE' => 'riconeitzel/German_LocalePack_de_DE/preview',
+            'fr_FR' => 'MaWoScha/German_LocalePack_fr_FR/master',
+        ];
+        if (!preg_match('/^[a-z]{2,2}_[A-Z]{2,2}$/', $code)) {
+            $this->_api->addLogComment("[ERROR] Invalid locale code $code");
+            return false;
+        }
+        $canonicalCode = null;
+        if (array_key_exists($code, $knownLanguagePacks)) {
+            $canonicalCode = $code;
+        } else {
+            $nativeCode = substr($code, 0, 3) . strtoupper(substr($code, 0, 2));
+            if ($nativeCode !== $code && array_key_exists($nativeCode, $knownLanguagePacks)) {
+                $canonicalCode = $nativeCode;
+                $this->_api->addLogComment("[INFO] No language pack found for $code but for $nativeCode - use this");
+            }
+        }
+        if (!$canonicalCode) {
+            $this->_api->addLogComment("[WARNING] Unknown language pack for locale $code");
+            return false;
+        }
+        list($user, $repo, $branch) = explode("/", $knownLanguagePacks[$canonicalCode]);
+        $rootDir = Mage::getBaseDir();
+        $modmanDir = $rootDir . '/.modman';
+        $packDir = $modmanDir . '/' . $repo;
+        if (!file_exists($packDir)) {
+            $tmpDir = "/tmp/{$repo}-{$branch}";
+            $url = "https://github.com/$user/$repo/archive/$branch.tar.gz";
+            $this->_api->addLogComment("[INFO] Installing $url");
+            if (!file_exists($modmanDir) && !$this->exec('modman init', $rootDir)) {
+                return false;
+            } elseif (!$this->exec("curl -sL $url | tar -xz", '/tmp')) {
+                return false;
+            } elseif (!file_exists($tmpDir) || !is_dir($tmpDir)) {
+                $this->_api->addLogComment("[ERRROR] Downloaded file not in expected directory $tmpDir");
+                return false;
+            } elseif (!$this->exec("mv $tmpDir $packDir")) {
+                $this->exec("rm -rf $tmpDir");
+                return false;
+            } elseif (!$this->exec("modman deploy $repo", $rootDir)) {
+                $this->_api->addLogComment("[ERRROR] Could not deploy $repo");
+                if (!$this->exec("rm -rf $packDir")) {
+                    $this->_api->addLogComment("[ERRROR] Could not remove $packDir");
+                }
+                return false;
+            }
+        }
+
+        return $canonicalCode;
+    }
+
+    private function exec($command, $cwd = null) {
+        if ($cwd) {
+            $command = "cd $cwd; " . $command;
+        }
+        $output = [];
+        $returnCode = 0;
+        exec($command, $output, $returnCode);
+        if ($returnCode > 0) {
+            $this->_api->addLogComment("[ERROR] Failed command: " . $command);
+            foreach ($output as $line) {
+                $this->_api->addLogComment("        " . $line);
+            }
+            return false;
+        }
         return true;
     }
 

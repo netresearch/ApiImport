@@ -1,4 +1,4 @@
-website_code;website_name;website_is_default;group_name;group_root_category;group_is_default;code;name;active;is_default
-base;My website;1;My Shop;Main Category;1;en;English;1;1
-base;My website;1;My Shop;Main Category;1;de;German;1;1
-base;My website;1;My Shop;Main Category;1;fr;French;0;1
+website_code;website_name;website_is_default;group_name;group_root_category;group_is_default;code;name;is_active;is_default;general/locale/code
+base;My website;1;My Shop;Main Category;1;en;English;1;1;en_US
+base;My website;1;My Shop;Main Category;1;de;German;1;1;de_DE
+base;My website;1;My Shop;Main Category;1;fr;French;0;1;fr_FR
