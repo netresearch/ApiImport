@@ -109,14 +109,7 @@ class Danslo_ApiImport_Model_Import_Api
 
                     if (Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE === $behavior
                         || Mage_ImportExport_Model_Import::BEHAVIOR_APPEND === $behavior) {
-                        $labels = array();
-                        foreach ($this->_storeCodeToId as $storeCode => $storeId) {
-                            $key = 'label-' . $storeCode;
-                            if (array_key_exists($key, $attribute)) {
-                                $labels[$storeId] = $attribute[$key];
-                                unset($attribute[$key]);
-                            }
-                        }
+                        $labels = $this->extractStoreFields($attribute, 'label');
                         $this->_setup->addAttribute($this->_catalogProductEntityTypeId, $attributeCode, $attribute);
                         if ($labels) {
                             try {
@@ -136,6 +129,105 @@ class Danslo_ApiImport_Model_Import_Api
         }
 
         return true;
+    }
+
+    public function importAttributeOptions(array $data, $behavior = Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE) {
+        $this->_init();
+        $attributeData = [];
+        foreach ($data as $i => $row) {
+            if (!is_array($row)) {
+                $this->_api->addLogComment("[ERROR] Invalid row $i");
+                continue;
+            }
+            if (empty($row['attribute_id'])) {
+                $this->_api->addLogComment("[ERROR] Invalid row $i: Missing attribute_id");
+                continue;
+            }
+            $attributeCode = $row['attribute_id'];
+            $labels = $this->extractStoreFields($row, 'label');
+            if (array_key_exists('label', $row) && !array_key_exists(0, $labels)) {
+                $labels[0] = $row['label'];
+            }
+            if (!$labels) {
+                $this->_api->addLogComment("[ERROR] Invalid row $i: No label(s)");
+                continue;
+            }
+            if (!array_key_exists($attributeCode, $attributeData)) {
+                $attributeData[$attributeCode] = [];
+            }
+            $attributeData[$attributeCode][] = $labels;
+        }
+        foreach ($attributeData as $attributeCode => $attributeOptions) {
+            /** @var Mage_Catalog_Model_Entity_Attribute $attribute */
+            $attribute = Mage::getModel('eav/entity_attribute');
+            $attribute->loadByCode('catalog_product', $attributeCode);
+            if (!$attribute->getId()) {
+                $this->_api->addLogComment("[ERROR] No attribute with code $attributeCode");
+                continue;
+            }
+            if (!in_array($attribute->getFrontendInput(), ['select', 'multiselect'])) {
+                $this->_api->addLogComment("[ERROR] Attribute $attributeCode is not a select/multiselect");
+                continue;
+            }
+
+            /** @var Mage_Eav_Model_Entity_Attribute_Source_Table $source */
+            $source = $attribute->getSource();
+            $present = [];
+            foreach (array_merge([0], $this->_storeCodeToId) as $storeId) {
+                $attribute->setStoreId($storeId);
+                $presentOptions = $source->getAllOptions(false);
+                foreach ($presentOptions as $presentOption) {
+                    $optionId = $presentOption['value'];
+                    $optionLabel = $presentOption['label'];
+                    if (!array_key_exists($optionId, $present)) {
+                        $present[$optionId] = [];
+                    }
+                    $present[$presentOption['value']][$storeId] = $presentOption['label'];
+                }
+            }
+            $options = ['delete' => [], 'value' => [], 'attribute_id' => $attribute->getId()];
+            foreach ($attributeOptions as $i => $labels) {
+                foreach ($present as $optionId => $presentLabels) {
+                    if (!array_diff_key($labels, $presentLabels)) {
+                        // Found option
+                        if ($behavior === Mage_ImportExport_Model_Import::BEHAVIOR_DELETE) {
+                            $options['delete'][$optionId] = true;
+                            $options['value'][$optionId] = $presentLabels;
+                        }
+                        unset($present[$optionId]);
+                        unset($attributeOptions[$i]);
+                        continue 2;
+                    }
+                }
+            }
+            if ($behavior === Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE) {
+                foreach ($present as $optionId => $labels) {
+                    $options['delete'][$optionId] = true;
+                    $options['value'][$optionId] = $labels;
+                }
+            }
+            if ($behavior === Mage_ImportExport_Model_Import::BEHAVIOR_REPLACE || $behavior === Mage_ImportExport_Model_Import::BEHAVIOR_APPEND) {
+                foreach ($attributeOptions as $i => $labels) {
+                    $options['value']['new_' . $i] = $labels;
+                }
+            }
+            if (count($options['value'])) {
+                $this->_setup->addAttributeOption($options);
+            }
+        }
+        return true;
+    }
+
+    private function extractStoreFields(array &$row, $field) {
+        $labels = [];
+        foreach ($this->_storeCodeToId as $storeCode => $storeId) {
+            $key = $field . '-' . $storeCode;
+            if (array_key_exists($key, $row)) {
+                $labels[$storeId] = $row[$key];
+                unset($row[$key]);
+            }
+        }
+        return $labels;
     }
 
     /**
