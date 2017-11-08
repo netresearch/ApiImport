@@ -474,14 +474,18 @@ class Danslo_ApiImport_Model_Import_Api
                     $this->_api->addLogComment("[INFO] Adding new root category '{$gData['root_category']}'");
                     /* @var Mage_Catalog_Model_Category $newCategory */
                     $newCategory = Mage::getModel('catalog/category');
+                    $parentId = Mage_Catalog_Model_Category::TREE_ROOT_ID;
+                    $parentCategory = Mage::getModel('catalog/category')->load($parentId);
                     $newCategory
                         ->setStoreId(0)
                         ->setData('name', $gData['root_category'])
                         ->setData('url_key', $gData['root_category'] . '-catalog')
                         ->setData('display_mode', 'PRODUCTS')
+                        ->setData('path', $parentCategory->getPath())
+                        ->setData('is_active', 1)
                         ->setData('level', 1);
                     $newCategory->save();
-                    $rootCategoryIds[$groupName['category']] = $newCategory->getId();
+                    $rootCategoryIds[$gData['root_category']] = $newCategory->getId();
                 }
                 $categoryId = $rootCategoryIds[$gData['root_category']];
 
