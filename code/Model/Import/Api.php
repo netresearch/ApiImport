@@ -55,6 +55,13 @@ class Danslo_ApiImport_Model_Import_Api
     }
 
     /**
+     * @return Danslo_ApiImport_Model_Import
+     */
+    public function getImportApi() {
+        return $this->_api;
+    }
+
+    /**
      * Fires off the import process through the import model.
      *
      * @param array $entities
@@ -468,7 +475,7 @@ class Danslo_ApiImport_Model_Import_Api
                 ->setIsDefault($wsData['is_default'] ? 1 : 0)
                 ->setName($wsData['name'])
                 ->save();
-            
+
             foreach ($wsData['groups'] as $groupName => $gData) {
                 if (!array_key_exists($gData['root_category'], $rootCategoryIds)) {
                     $this->_api->addLogComment("[INFO] Adding new root category '{$gData['root_category']}'");
@@ -522,7 +529,7 @@ class Danslo_ApiImport_Model_Import_Api
                         ->save();
                     $existingGroups[$group->getId()] = $group;
                 }
-                
+
                 if ($gData['is_default'] && $website->getDefaultGroupId() !== $group->getId()) {
                     $this->_api->addLogComment("[INFO] Setting '$groupName' as default group on '$wsCode'");
                     $website->setDefaultGroupId($group->getId())->save();

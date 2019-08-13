@@ -58,6 +58,22 @@ class Danslo_ApiImport_Model_Import
     }
 
     /**
+     * @return Mage_Core_Model_Log_Adapter
+     */
+    public function getLogger()
+    {
+        return $this->_logInstance;
+    }
+
+    /**
+     * @param Mage_Core_Model_Log_Adapter $logInstance
+     */
+    public function setLogger($logInstance)
+    {
+        $this->_logInstance = $logInstance;
+    }
+
+    /**
      * Imports entities from the source modle and logs the result.
      * This method will always return true because that's what core returns.
      *
