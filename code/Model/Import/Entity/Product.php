@@ -319,4 +319,31 @@ class Danslo_ApiImport_Model_Import_Entity_Product
         }
         return $this->_fileUploader;
     }
+
+    /**
+     * Initialize categories id-path to ID.
+     *
+     * @return Mage_ImportExport_Model_Import_Entity_Product
+     */
+    protected function _initCategories()
+    {
+        $collection = Mage::getResourceModel('catalog/category_collection')->addNameToResult();
+        /* @var $collection Mage_Catalog_Model_Resource_Eav_Mysql4_Category_Collection */
+        foreach ($collection as $category) {
+            $path = explode('/', $category->getPath());
+            if (count($path) > 1) {
+                array_shift($path);
+                $rootCategoryId = array_shift($path);
+                if (!isset($this->_categoriesWithRoots[$rootCategoryId])) {
+                    $this->_categoriesWithRoots[$rootCategoryId] = array();
+                }
+                $index = implode('/', $path);
+                $this->_categoriesWithRoots[$rootCategoryId][$index] = $category->getId();
+                if (count($path) > 0) {
+                    $this->_categories[$index] = $category->getId();
+                }
+            }
+        }
+        return $this;
+    }
 }

@@ -45,18 +45,24 @@ class Danslo_ApiImport_Model_Import_Entity_Category
     /**
      * Error codes.
      */
-    const ERROR_INVALID_SCOPE                  = 'invalidScope';
-    const ERROR_INVALID_WEBSITE                = 'invalidWebsite';
-    const ERROR_INVALID_STORE                  = 'invalidStore';
-    const ERROR_INVALID_ROOT                   = 'invalidRoot';
-    const ERROR_CATEGORY_IS_EMPTY              = 'categoryIsEmpty';
-    const ERROR_PARENT_NOT_FOUND               = 'parentNotFound';
-    const ERROR_NO_DEFAULT_ROW                 = 'noDefaultRow';
-    const ERROR_DUPLICATE_CATEGORY             = 'duplicateCategory';
-    const ERROR_DUPLICATE_SCOPE                = 'duplicateScope';
-    const ERROR_ROW_IS_ORPHAN                  = 'rowIsOrphan';
-    const ERROR_VALUE_IS_REQUIRED              = 'valueIsRequired';
-    const ERROR_CATEGORY_NOT_FOUND_FOR_DELETE  = 'categoryNotFoundToDelete';
+    const ERROR_INVALID_SCOPE                 = 'invalidScope';
+    const ERROR_INVALID_WEBSITE               = 'invalidWebsite';
+    const ERROR_INVALID_STORE                 = 'invalidStore';
+    const ERROR_INVALID_ROOT                  = 'invalidRoot';
+    const ERROR_CATEGORY_IS_EMPTY             = 'categoryIsEmpty';
+    const ERROR_PARENT_NOT_FOUND              = 'parentNotFound';
+    const ERROR_NO_DEFAULT_ROW                = 'noDefaultRow';
+    const ERROR_DUPLICATE_CATEGORY            = 'duplicateCategory';
+    const ERROR_DUPLICATE_SCOPE               = 'duplicateScope';
+    const ERROR_ROW_IS_ORPHAN                 = 'rowIsOrphan';
+    const ERROR_VALUE_IS_REQUIRED             = 'valueIsRequired';
+    const ERROR_CATEGORY_NOT_FOUND_FOR_DELETE = 'categoryNotFoundToDelete';
+
+
+    /**
+     * Default Values
+     */
+    const USE_DEFAULT = 'useDefault';
 
     /**
      * Category attributes parameters.
@@ -326,25 +332,22 @@ class Danslo_ApiImport_Model_Import_Entity_Category
      */
     protected function _initCategories()
     {
-        $collection = Mage::getResourceModel('catalog/category_collection')->addNameToResult();
         /* @var $collection Mage_Catalog_Model_Resource_Eav_Mysql4_Category_Collection */
+        $collection = Mage::getResourceModel('catalog/category_collection')->addNameToResult();
 
+        /** @var $category Mage_Catalog_Model_Category */
         foreach ($collection as $category) {
-            /** @var $category Mage_Catalog_Model_Category */
-            $structure = explode('/', $category->getPath());
-            $pathSize  = count($structure);
-            if ($pathSize > 1) {
-                $path = array();
-                for ($i = 1; $i < $pathSize; $i++) {
-                    $path[] = $collection->getItemById($structure[$i])->getName();
+            $path = explode('/', $category->getPath());
+            if (count($path) > 1) {
+                array_shift($path);
+                $rootCategoryId = array_shift($path);
+                if (!isset($this->_categoriesWithRoots[$rootCategoryId])) {
+                    $this->_categoriesWithRoots[$rootCategoryId] = array();
                 }
-                $rootCategoryName = array_shift($path);
-                if (!isset($this->_categoriesWithRoots[$rootCategoryName])) {
-                    $this->_categoriesWithRoots[$rootCategoryName] = array();
-                }
-                $index = $this->_implodeEscaped('/', $path);
+                $indexId = $this->_implodeEscaped('/', $path);
 
-                $this->_categoriesWithRoots[$rootCategoryName][$index] = array(
+                $this->_categoriesWithRoots[$rootCategoryId][$indexId] = array(
+                    'name'      => $category->getName(),
                     'entity_id' => $category->getId(),
                     'path'      => $category->getPath(),
                     'level'     => $category->getLevel(),
@@ -352,6 +355,7 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                 );
             }
         }
+
         return $this;
     }
 
@@ -485,10 +489,7 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                 $rowData  = $this->_prepareRowForDb($rowData);
 
                 if (self::SCOPE_DEFAULT == $rowScope) {
-                    $rowCategory = $rowData[self::COL_CATEGORY];
-
                     $parentCategory = $this->_getParentCategory($rowData);
-
                     // entity table data
                     $entityRow = array(
                         'parent_id'   => $parentCategory['entity_id'],
@@ -506,7 +507,9 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                         $entityRow['path']             = $parentCategory['path'] .'/'.$entityId;
                         $entityRowsUp[]                = $entityRow;
                     } else { // create
-                        $entityId                      = $nextEntityId++;
+                        //TODO NR change after migration $rowData[self::COL_CATEGORY] -> $entityid
+//                        $entityId                      = $nextEntityId++;
+                        $entityId = array_pop(explode('/',$rowData[self::COL_CATEGORY]));
                         $entityRow['entity_id']        = $entityId;
                         $entityRow['path']             = $parentCategory['path'] .'/'.$entityId;
                         $entityRow['entity_type_id']   = $this->_entityTypeId;
@@ -538,15 +541,25 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                 $category = Mage::getModel('catalog/category', $rowData);
 
                 foreach (array_intersect_key($rowData, $this->_attributes) as $attrCode => $attrValue) {
+                    // Remove all entries, which should use default values
+                    if ($attrValue == self::USE_DEFAULT) {
+                        continue;
+                    }
+
                     if (!$this->_attributes[$attrCode]['is_static'] && strlen($attrValue)) {
 
                         /** @var $attribute Mage_Eav_Model_Entity_Attribute */
                         $attribute = $this->_attributes[$attrCode]['attribute'];
 
-                        if('multiselect' != $attribute->getFrontendInput()
-                            && self::SCOPE_NULL == $rowScope) {
+                        if ('multiselect' != $attribute->getFrontendInput() && self::SCOPE_NULL == $rowScope) {
                             continue; // skip attribute processing for SCOPE_NULL rows
                         }
+                        if ('multiselect' == $attribute->getFrontendInput()) {
+                            // Prepare Data for the Backend Model Requirements
+                            $attrValue = explode(',', $attrValue);
+                            $category->setData($attrCode, $attrValue);
+                        }
+
 
                         $attrId    = $attribute->getAttributeId();
                         $backModel = $attribute->getBackendModel();
@@ -578,16 +591,7 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                         }
 
                         foreach ($storeIds as $storeId) {
-                            if('multiselect' == $attribute->getFrontendInput()) {
-                                if(!isset($attributes[$attrTable][$entityId][$attrId][$storeId])) {
-                                    $attributes[$attrTable][$entityId][$attrId][$storeId] = '';
-                                } else {
-                                    $attributes[$attrTable][$entityId][$attrId][$storeId] .= ',';
-                                }
-                                $attributes[$attrTable][$entityId][$attrId][$storeId] .= $attrValue;
-                            } else {
-                                $attributes[$attrTable][$entityId][$attrId][$storeId] = $attrValue;
-                            }
+                            $attributes[$attrTable][$entityId][$attrId][$storeId] = $attrValue;
                         }
 
                         $attribute->setBackendModel($backModel); // restore 'backend_model' to avoid 'default' setting
@@ -834,7 +838,7 @@ class Danslo_ApiImport_Model_Import_Entity_Category
             }
 
             //check if the root exists
-            if (! isset($this->_categoriesWithRoots[$root])) {
+            if (!isset($this->_categoriesWithRoots[$root])) {
                 $this->addRowError(self::ERROR_INVALID_ROOT, $rowNum);
                 return false;
             }
@@ -885,15 +889,19 @@ class Danslo_ApiImport_Model_Import_Entity_Category
      * Check one attribute. Can be overridden in child. Copied this validator
      * from the customer importer.
      *
-     * @param string $attrCode Attribute code
-     * @param array $attrParams Attribute params
-     * @param array $rowData Row data
-     * @param int $rowNum
+     * @param string $attrCode   Attribute code
+     * @param array  $attrParams Attribute params
+     * @param array  $rowData    Row data
+     * @param int    $rowNum
+     *
      * @return boolean
      */
     public function isAttributeValid($attrCode, array $attrParams, array $rowData, $rowNum)
     {
-        $message = '';
+        // Check if the default value should be used
+        if ($rowData[$attrCode] == self::USE_DEFAULT) {
+            return true;
+        }
         switch ($attrParams['type']) {
             case 'varchar':
                 $val   = Mage::helper('core/string')->cleanString($rowData[$attrCode]);
@@ -906,8 +914,18 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                 $message = 'Decimal value expected.';
                 break;
             case 'select':
-            case 'multiselect':
                 $valid = isset($attrParams['options'][strtolower($rowData[$attrCode])]);
+                $message = 'Possible options are: ' . implode(', ', array_keys($attrParams['options']));
+                break;
+            case 'multiselect':
+                $options = explode(',',$rowData[$attrCode]);
+                $valid=true;
+                foreach ($options as $option) {
+                    if(!isset($attrParams['options'][$option])){
+                        $valid=false;
+                        break;
+                    }
+                }
                 $message = 'Possible options are: ' . implode(', ', array_keys($attrParams['options']));
                 break;
             case 'int':
@@ -927,7 +945,8 @@ class Danslo_ApiImport_Model_Import_Entity_Category
                 $message = 'String is too long, only ' . self::DB_MAX_TEXT_LENGTH . ' characters allowed.';
                 break;
             default:
-                $valid = true;
+                $valid   = false;
+                $message = 'Unknown attribute used.';
                 break;
         }
 

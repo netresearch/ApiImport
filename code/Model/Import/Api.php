@@ -449,11 +449,11 @@ class Danslo_ApiImport_Model_Import_Api
             ->addAttributeToFilter('level', 1);
         foreach ($categories as $category) {
             /* @var Mage_Catalog_Model_Category $category */
-            $categoryName = $category->getName();
-            if (array_key_exists($categoryName, $rootCategoryIds)) {
-                $this->_api->addLogComment("[WARNING] Duplicate root category name: $categoryName");
+            $categoryId = $category->getId();
+            if (array_key_exists($categoryId, $rootCategoryIds)) {
+                $this->_api->addLogComment("[WARNING] Duplicate root category id: $categoryId");
             } else {
-                $rootCategoryIds[$categoryName] = $category->getId();
+                $rootCategoryIds[$categoryId] = $categoryId;
             }
         }
 
@@ -485,11 +485,13 @@ class Danslo_ApiImport_Model_Import_Api
                     $parentCategory = Mage::getModel('catalog/category')->load($parentId);
                     $newCategory
                         ->setStoreId(0)
-                        ->setData('name', $gData['root_category'])
-                        ->setData('url_key', $gData['root_category'] . '-catalog')
+                        ->setId($gData['root_category'])
+                        ->setData('name', $groupName)
+                        ->setData('url_key', $groupName . '-catalog')
                         ->setData('display_mode', 'PRODUCTS')
-                        ->setData('path', $parentCategory->getPath())
+                        ->setData('path', $parentCategory->getPath() . '/' . $gData['root_category'])
                         ->setData('is_active', 1)
+                        ->setData('attribute_set_id', Mage::getSingleton('catalog/category')->getDefaultAttributeSetId())
                         ->setData('level', 1);
                     $newCategory->save();
                     $rootCategoryIds[$gData['root_category']] = $newCategory->getId();
